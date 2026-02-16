@@ -254,7 +254,7 @@ export default function Dashboard() {
                     <div className="space-y-2 text-sm text-gray-600">
                       <div className="flex justify-between">
                         <span>Tipo</span>
-                        <span className="font-medium">e2-highcpu-4</span>
+                        <span className="font-medium">e2-medium</span>
                       </div>
                       <div className="flex justify-between">
                         <span>Uptime</span>

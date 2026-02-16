@@ -4,9 +4,9 @@ const VAPI_API_KEY = process.env.VAPI_API_KEY || ''
 
 // Precios estimados GCP (us-central1)
 const GCP_PRICING = {
-  // e2-highcpu-4: 4 vCPU, 4GB RAM
+  // e2-medium: 2 vCPU, 4GB RAM
   // Precio por hora: ~$0.134/hr
-  chatwootVmHourly: 0.134,
+  chatwootVmHourly: 0.034,
   // Cloud Run: 
   // CPU: $0.00002400/vCPU-second = $0.0864/vCPU-hour
   // Memory: $0.00000250/GiB-second
