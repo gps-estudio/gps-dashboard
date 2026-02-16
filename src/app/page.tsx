@@ -30,7 +30,7 @@ const apps = [
   {
     name: 'Chatwoot',
     description: 'Plataforma de soporte y mensajería',
-    url: 'https://34.170.148.211.nip.io',
+    url: 'https://136.115.30.238.nip.io',
     icon: '💬',
     color: 'from-purple-500 to-violet-600',
   },
