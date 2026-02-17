@@ -6,11 +6,22 @@ type Tab = 'apps' | 'costs'
 type Period = 'today' | 'week' | 'month' | 'all'
 
 interface CostData {
-  vapi: { total: number; calls: number; breakdown: Record<string, number> }
+  vapi: { total: number; calls: number; breakdown: Record<string, number>; limitedTo14Days?: boolean }
   cloudRun: { total: number; requests: number; cpuHours: number }
-  chatwoot: { total: number; uptime: number; machineType?: string; provider?: string; specs?: string; monthlyRate?: number }
+  chatwoot: { 
+    total: number; 
+    uptime: number; 
+    machineType?: string; 
+    provider?: string; 
+    specs?: string; 
+    monthlyRate?: number;
+    isRealData?: boolean;
+    ip?: string;
+    lastUpdated?: string;
+  }
   openclaw: { total: number; uptime: number; machineType?: string }
   totalMonth: number
+  timestamp?: string
 }
 
 const apps = [
@@ -190,7 +201,12 @@ export default function Dashboard() {
                 {/* Service Cards */}
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
                   {/* VAPI */}
-                  <div className="bg-white rounded-2xl p-6 shadow-lg">
+                  <div className="bg-white rounded-2xl p-6 shadow-lg relative">
+                    {costs.vapi.limitedTo14Days && (
+                      <span className="absolute top-2 right-2 text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full font-medium">
+                        ⚠️ 14 días
+                      </span>
+                    )}
                     <div className="flex items-center justify-between mb-4">
                       <h3 className="text-lg font-semibold text-gray-800">📞 VAPI</h3>
                       <span className="text-2xl font-bold text-blue-600">${costs.vapi.total.toFixed(2)}</span>
@@ -200,10 +216,10 @@ export default function Dashboard() {
                         <span>Llamadas</span>
                         <span className="font-medium">{costs.vapi.calls}</span>
                       </div>
-                      {costs.vapi.breakdown.transport > 0 && (
+                      {costs.vapi.breakdown.stt > 0 && (
                         <div className="flex justify-between">
-                          <span>Transport</span>
-                          <span>${costs.vapi.breakdown.transport.toFixed(3)}</span>
+                          <span>STT</span>
+                          <span>${costs.vapi.breakdown.stt.toFixed(3)}</span>
                         </div>
                       )}
                       {costs.vapi.breakdown.llm > 0 && (
@@ -224,11 +240,23 @@ export default function Dashboard() {
                           <span>${costs.vapi.breakdown.vapi.toFixed(3)}</span>
                         </div>
                       )}
+                      {costs.vapi.breakdown.transport > 0 && (
+                        <div className="flex justify-between">
+                          <span>Transport</span>
+                          <span>${costs.vapi.breakdown.transport.toFixed(3)}</span>
+                        </div>
+                      )}
+                      {costs.vapi.limitedTo14Days && (
+                        <p className="text-xs text-amber-600 mt-2">⚠️ Limitado a últimos 14 días (plan VAPI)</p>
+                      )}
                     </div>
                   </div>
 
                   {/* Cloud Run (Sofia Bot) */}
-                  <div className="bg-white rounded-2xl p-6 shadow-lg">
+                  <div className="bg-white rounded-2xl p-6 shadow-lg relative">
+                    <span className="absolute top-2 right-2 text-xs bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded-full font-medium">
+                      ~ Estimado
+                    </span>
                     <div className="flex items-center justify-between mb-4">
                       <h3 className="text-lg font-semibold text-gray-800">🤖 Sofia Bot</h3>
                       <span className="text-2xl font-bold text-green-600">${costs.cloudRun.total.toFixed(2)}</span>
@@ -236,18 +264,23 @@ export default function Dashboard() {
                     <div className="space-y-2 text-sm text-gray-600">
                       <div className="flex justify-between">
                         <span>Requests</span>
-                        <span className="font-medium">{costs.cloudRun.requests.toLocaleString()}</span>
+                        <span className="font-medium">~{costs.cloudRun.requests.toLocaleString()}</span>
                       </div>
                       <div className="flex justify-between">
                         <span>CPU Hours</span>
-                        <span>{costs.cloudRun.cpuHours.toFixed(2)}h</span>
+                        <span>~{costs.cloudRun.cpuHours.toFixed(2)}h</span>
                       </div>
-                      <p className="text-xs text-gray-400 mt-2">Cloud Run (us-central1)</p>
+                      <p className="text-xs text-gray-400 mt-2">☁️ Cloud Run (us-central1)</p>
                     </div>
                   </div>
 
                   {/* Chatwoot VM - Hetzner */}
-                  <div className="bg-white rounded-2xl p-6 shadow-lg">
+                  <div className="bg-white rounded-2xl p-6 shadow-lg relative">
+                    {costs.chatwoot.isRealData && (
+                      <span className="absolute top-2 right-2 text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full font-medium">
+                        ✓ API Real
+                      </span>
+                    )}
                     <div className="flex items-center justify-between mb-4">
                       <h3 className="text-lg font-semibold text-gray-800">💬 Chatwoot</h3>
                       <span className="text-2xl font-bold text-purple-600">${costs.chatwoot.total.toFixed(2)}</span>
@@ -264,15 +297,24 @@ export default function Dashboard() {
                       {costs.chatwoot.monthlyRate && (
                         <div className="flex justify-between">
                           <span>Mensual</span>
-                          <span className="font-medium">~${costs.chatwoot.monthlyRate}/mes</span>
+                          <span className="font-medium">${costs.chatwoot.monthlyRate.toFixed(2)}/mes</span>
                         </div>
                       )}
-                      <p className="text-xs text-gray-400 mt-2">🇩🇪 Hetzner (Ashburn)</p>
+                      {costs.chatwoot.ip && costs.chatwoot.ip !== 'N/A' && (
+                        <div className="flex justify-between">
+                          <span>IP</span>
+                          <span className="font-mono text-xs">{costs.chatwoot.ip}</span>
+                        </div>
+                      )}
+                      <p className="text-xs text-gray-400 mt-2">🇺🇸 Hetzner (Ashburn, VA)</p>
                     </div>
                   </div>
 
                   {/* OpenClaw Gateway */}
-                  <div className="bg-white rounded-2xl p-6 shadow-lg">
+                  <div className="bg-white rounded-2xl p-6 shadow-lg relative">
+                    <span className="absolute top-2 right-2 text-xs bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded-full font-medium">
+                      ~ Estimado
+                    </span>
                     <div className="flex items-center justify-between mb-4">
                       <h3 className="text-lg font-semibold text-gray-800">🦾 OpenClaw</h3>
                       <span className="text-2xl font-bold text-orange-600">${costs.openclaw.total.toFixed(2)}</span>
@@ -284,9 +326,9 @@ export default function Dashboard() {
                       </div>
                       <div className="flex justify-between">
                         <span>Uptime</span>
-                        <span>{costs.openclaw.uptime.toFixed(1)}%</span>
+                        <span>~{costs.openclaw.uptime.toFixed(1)}%</span>
                       </div>
-                      <p className="text-xs text-gray-400 mt-2">Compute Engine (us-central1)</p>
+                      <p className="text-xs text-gray-400 mt-2">☁️ Compute Engine (us-central1)</p>
                     </div>
                   </div>
                 </div>
@@ -338,6 +380,26 @@ export default function Dashboard() {
                       <span>OpenClaw</span>
                     </div>
                   </div>
+                </div>
+
+                {/* Last Updated */}
+                <div className="text-center text-sm text-gray-500 mt-4">
+                  <p>
+                    Última actualización: {costs.timestamp ? new Date(costs.timestamp).toLocaleString('es-AR', { 
+                      timeZone: 'America/Argentina/Buenos_Aires',
+                      dateStyle: 'short',
+                      timeStyle: 'short'
+                    }) : 'N/A'}
+                  </p>
+                  <p className="text-xs mt-1">
+                    <span className="inline-flex items-center gap-1">
+                      <span className="w-2 h-2 rounded-full bg-green-500"></span> API Real
+                    </span>
+                    {' · '}
+                    <span className="inline-flex items-center gap-1">
+                      <span className="w-2 h-2 rounded-full bg-yellow-500"></span> Estimado
+                    </span>
+                  </p>
                 </div>
               </div>
             )}
