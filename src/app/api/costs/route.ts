@@ -5,14 +5,21 @@ const VAPI_API_KEY = process.env.VAPI_API_KEY || ''
 // Precios estimados GCP (us-central1)
 const GCP_PRICING = {
   // e2-medium: 2 vCPU, 4GB RAM
-  // Precio por hora: ~$0.134/hr
-  chatwootVmHourly: 0.034,
+  // Precio por hora: ~$0.034/hr (on-demand)
+  e2MediumHourly: 0.034,
   // Cloud Run: 
   // CPU: $0.00002400/vCPU-second = $0.0864/vCPU-hour
   // Memory: $0.00000250/GiB-second
   // Requests: $0.40 per million
   cloudRunCpuPerHour: 0.0864,
   cloudRunRequestsPerMillion: 0.40,
+}
+
+// Precios Hetzner
+const HETZNER_PRICING = {
+  // CX23: 2 vCPU, 4GB RAM
+  // €4.09/mes ~ $4.50/mes
+  cx23Monthly: 4.50,
 }
 
 type Period = 'today' | 'week' | 'month' | 'all'
@@ -128,13 +135,37 @@ async function getCloudRunCosts(period: Period) {
 async function getChatwootCosts(period: Period) {
   const { start, end } = getDateRange(period)
   const hours = (end.getTime() - start.getTime()) / (1000 * 60 * 60)
+  const days = hours / 24
   
-  // Chatwoot VM runs 24/7
-  const cost = hours * GCP_PRICING.chatwootVmHourly
+  // Chatwoot migrado a Hetzner CX23 (17 Feb 2026)
+  // €4.09/mes ~ $4.50/mes
+  const monthlyRate = HETZNER_PRICING.cx23Monthly
+  const dailyRate = monthlyRate / 30
+  const cost = days * dailyRate
+  
+  return {
+    total: cost,
+    uptime: 99.9,
+    machineType: 'CX23',
+    provider: 'Hetzner',
+    specs: '2 vCPU, 4GB RAM',
+    ip: '178.156.255.182',
+    monthlyRate,
+  }
+}
+
+async function getOpenClawCosts(period: Period) {
+  const { start, end } = getDateRange(period)
+  const hours = (end.getTime() - start.getTime()) / (1000 * 60 * 60)
+  
+  // OpenClaw Gateway runs 24/7 on e2-medium
+  const cost = hours * GCP_PRICING.e2MediumHourly
   
   return {
     total: cost,
     uptime: 99.9, // Assumed uptime
+    machineType: 'e2-medium',
+    region: 'us-central1',
   }
 }
 
@@ -143,18 +174,20 @@ export async function GET(request: NextRequest) {
   const period = (searchParams.get('period') as Period) || 'month'
 
   try {
-    const [vapi, cloudRun, chatwoot] = await Promise.all([
+    const [vapi, cloudRun, chatwoot, openclaw] = await Promise.all([
       getVAPICosts(period),
       getCloudRunCosts(period),
       getChatwootCosts(period),
+      getOpenClawCosts(period),
     ])
 
-    const totalMonth = vapi.total + cloudRun.total + chatwoot.total
+    const totalMonth = vapi.total + cloudRun.total + chatwoot.total + openclaw.total
 
     return NextResponse.json({
       vapi,
       cloudRun,
       chatwoot,
+      openclaw,
       totalMonth,
       period,
       timestamp: new Date().toISOString(),

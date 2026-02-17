@@ -8,7 +8,8 @@ type Period = 'today' | 'week' | 'month' | 'all'
 interface CostData {
   vapi: { total: number; calls: number; breakdown: Record<string, number> }
   cloudRun: { total: number; requests: number; cpuHours: number }
-  chatwoot: { total: number; uptime: number }
+  chatwoot: { total: number; uptime: number; machineType?: string; provider?: string; specs?: string; monthlyRate?: number }
+  openclaw: { total: number; uptime: number; machineType?: string }
   totalMonth: number
 }
 
@@ -29,8 +30,8 @@ const apps = [
   },
   {
     name: 'Chatwoot',
-    description: 'Plataforma de soporte y mensajería',
-    url: 'https://136.115.30.238.nip.io',
+    description: 'Plataforma de soporte y mensajería (Hetzner)',
+    url: 'https://178.156.255.182.sslip.io',
     icon: '💬',
     color: 'from-purple-500 to-violet-600',
   },
@@ -187,7 +188,7 @@ export default function Dashboard() {
                 </div>
 
                 {/* Service Cards */}
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
                   {/* VAPI */}
                   <div className="bg-white rounded-2xl p-6 shadow-lg">
                     <div className="flex items-center justify-between mb-4">
@@ -245,7 +246,7 @@ export default function Dashboard() {
                     </div>
                   </div>
 
-                  {/* Chatwoot VM */}
+                  {/* Chatwoot VM - Hetzner */}
                   <div className="bg-white rounded-2xl p-6 shadow-lg">
                     <div className="flex items-center justify-between mb-4">
                       <h3 className="text-lg font-semibold text-gray-800">💬 Chatwoot</h3>
@@ -254,11 +255,36 @@ export default function Dashboard() {
                     <div className="space-y-2 text-sm text-gray-600">
                       <div className="flex justify-between">
                         <span>Tipo</span>
+                        <span className="font-medium">{costs.chatwoot.machineType || 'CX23'}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>Specs</span>
+                        <span className="font-medium">{costs.chatwoot.specs || '2 vCPU, 4GB'}</span>
+                      </div>
+                      {costs.chatwoot.monthlyRate && (
+                        <div className="flex justify-between">
+                          <span>Mensual</span>
+                          <span className="font-medium">~${costs.chatwoot.monthlyRate}/mes</span>
+                        </div>
+                      )}
+                      <p className="text-xs text-gray-400 mt-2">🇩🇪 Hetzner (Ashburn)</p>
+                    </div>
+                  </div>
+
+                  {/* OpenClaw Gateway */}
+                  <div className="bg-white rounded-2xl p-6 shadow-lg">
+                    <div className="flex items-center justify-between mb-4">
+                      <h3 className="text-lg font-semibold text-gray-800">🦾 OpenClaw</h3>
+                      <span className="text-2xl font-bold text-orange-600">${costs.openclaw.total.toFixed(2)}</span>
+                    </div>
+                    <div className="space-y-2 text-sm text-gray-600">
+                      <div className="flex justify-between">
+                        <span>Tipo</span>
                         <span className="font-medium">e2-medium</span>
                       </div>
                       <div className="flex justify-between">
                         <span>Uptime</span>
-                        <span>{costs.chatwoot.uptime.toFixed(1)}%</span>
+                        <span>{costs.openclaw.uptime.toFixed(1)}%</span>
                       </div>
                       <p className="text-xs text-gray-400 mt-2">Compute Engine (us-central1)</p>
                     </div>
@@ -286,10 +312,15 @@ export default function Dashboard() {
                           style={{ width: `${(costs.chatwoot.total / costs.totalMonth) * 100}%` }}
                           title={`Chatwoot: $${costs.chatwoot.total.toFixed(2)}`}
                         ></div>
+                        <div 
+                          className="bg-orange-500 h-full" 
+                          style={{ width: `${(costs.openclaw.total / costs.totalMonth) * 100}%` }}
+                          title={`OpenClaw: $${costs.openclaw.total.toFixed(2)}`}
+                        ></div>
                       </>
                     )}
                   </div>
-                  <div className="flex justify-center gap-6 mt-4 text-sm">
+                  <div className="flex flex-wrap justify-center gap-4 mt-4 text-sm">
                     <div className="flex items-center gap-2">
                       <div className="w-3 h-3 rounded-full bg-blue-500"></div>
                       <span>VAPI</span>
@@ -301,6 +332,10 @@ export default function Dashboard() {
                     <div className="flex items-center gap-2">
                       <div className="w-3 h-3 rounded-full bg-purple-500"></div>
                       <span>Chatwoot</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <div className="w-3 h-3 rounded-full bg-orange-500"></div>
+                      <span>OpenClaw</span>
                     </div>
                   </div>
                 </div>
