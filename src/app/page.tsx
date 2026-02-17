@@ -6,8 +6,8 @@ type Tab = 'apps' | 'costs'
 type Period = 'today' | 'week' | 'month' | 'all'
 
 interface CostData {
-  vapi: { total: number; calls: number; breakdown: Record<string, number>; limitedTo14Days?: boolean }
-  cloudRun: { total: number; requests: number; cpuHours: number }
+  vapi: { total: number; calls: number; breakdown: Record<string, number>; limitedTo14Days?: boolean; isRealData?: boolean }
+  cloudRun: { total: number; requests: number; cpuHours: number; isRealData?: boolean }
   chatwoot: { 
     total: number; 
     uptime: number; 
@@ -19,9 +19,11 @@ interface CostData {
     ip?: string;
     lastUpdated?: string;
   }
-  openclaw: { total: number; uptime: number; machineType?: string }
+  openclaw: { total: number; uptime: number; machineType?: string; specs?: string; hourlyRate?: number; isRealData?: boolean }
   totalMonth: number
   timestamp?: string
+  gcpBillingAccount?: string
+  gcpProject?: string
 }
 
 const apps = [
@@ -254,9 +256,15 @@ export default function Dashboard() {
 
                   {/* Cloud Run (Sofia Bot) */}
                   <div className="bg-white rounded-2xl p-6 shadow-lg relative">
-                    <span className="absolute top-2 right-2 text-xs bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded-full font-medium">
-                      ~ Estimado
-                    </span>
+                    {costs.cloudRun.isRealData ? (
+                      <span className="absolute top-2 right-2 text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full font-medium">
+                        ✓ API Real
+                      </span>
+                    ) : (
+                      <span className="absolute top-2 right-2 text-xs bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded-full font-medium">
+                        ~ Estimado
+                      </span>
+                    )}
                     <div className="flex items-center justify-between mb-4">
                       <h3 className="text-lg font-semibold text-gray-800">🤖 Sofia Bot</h3>
                       <span className="text-2xl font-bold text-green-600">${costs.cloudRun.total.toFixed(2)}</span>
@@ -264,11 +272,11 @@ export default function Dashboard() {
                     <div className="space-y-2 text-sm text-gray-600">
                       <div className="flex justify-between">
                         <span>Requests</span>
-                        <span className="font-medium">~{costs.cloudRun.requests.toLocaleString()}</span>
+                        <span className="font-medium">{costs.cloudRun.isRealData ? '' : '~'}{costs.cloudRun.requests.toLocaleString()}</span>
                       </div>
                       <div className="flex justify-between">
                         <span>CPU Hours</span>
-                        <span>~{costs.cloudRun.cpuHours.toFixed(2)}h</span>
+                        <span>{costs.cloudRun.isRealData ? '' : '~'}{costs.cloudRun.cpuHours.toFixed(2)}h</span>
                       </div>
                       <p className="text-xs text-gray-400 mt-2">☁️ Cloud Run (us-central1)</p>
                     </div>
@@ -312,9 +320,15 @@ export default function Dashboard() {
 
                   {/* OpenClaw Gateway */}
                   <div className="bg-white rounded-2xl p-6 shadow-lg relative">
-                    <span className="absolute top-2 right-2 text-xs bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded-full font-medium">
-                      ~ Estimado
-                    </span>
+                    {costs.openclaw.isRealData ? (
+                      <span className="absolute top-2 right-2 text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full font-medium">
+                        ✓ API Real
+                      </span>
+                    ) : (
+                      <span className="absolute top-2 right-2 text-xs bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded-full font-medium">
+                        ~ Estimado
+                      </span>
+                    )}
                     <div className="flex items-center justify-between mb-4">
                       <h3 className="text-lg font-semibold text-gray-800">🦾 OpenClaw</h3>
                       <span className="text-2xl font-bold text-orange-600">${costs.openclaw.total.toFixed(2)}</span>
@@ -322,12 +336,24 @@ export default function Dashboard() {
                     <div className="space-y-2 text-sm text-gray-600">
                       <div className="flex justify-between">
                         <span>Tipo</span>
-                        <span className="font-medium">e2-medium</span>
+                        <span className="font-medium">{costs.openclaw.machineType || 'e2-medium'}</span>
                       </div>
+                      {costs.openclaw.specs && (
+                        <div className="flex justify-between">
+                          <span>Specs</span>
+                          <span className="font-medium">{costs.openclaw.specs}</span>
+                        </div>
+                      )}
                       <div className="flex justify-between">
                         <span>Uptime</span>
-                        <span>~{costs.openclaw.uptime.toFixed(1)}%</span>
+                        <span>{costs.openclaw.isRealData ? '' : '~'}{costs.openclaw.uptime.toFixed(1)}%</span>
                       </div>
+                      {costs.openclaw.hourlyRate && (
+                        <div className="flex justify-between">
+                          <span>Tarifa</span>
+                          <span className="font-medium">${costs.openclaw.hourlyRate.toFixed(4)}/hr</span>
+                        </div>
+                      )}
                       <p className="text-xs text-gray-400 mt-2">☁️ Compute Engine (us-central1)</p>
                     </div>
                   </div>

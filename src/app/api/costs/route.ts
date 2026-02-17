@@ -1,19 +1,27 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { GoogleAuth } from 'google-auth-library'
 
 const VAPI_API_KEY = process.env.VAPI_API_KEY || ''
 const HETZNER_API_TOKEN = process.env.HETZNER_API_TOKEN || ''
 const HETZNER_API_BASE = 'https://api.hetzner.cloud/v1'
 
-// Precios estimados GCP (us-central1)
+// GCP Billing Configuration
+const GCP_BILLING_CREDENTIALS = process.env.GCP_BILLING_CREDENTIALS || ''
+const GCP_BILLING_ACCOUNT_ID = process.env.GCP_BILLING_ACCOUNT_ID || '01F2CB-329AFF-39493F'
+
+// GCP Projects configuration
+const GCP_PROJECTS = {
+  cloudRun: 'gps-bot-481315',      // Cloud Run (gps-bot)
+  openClaw: 'brian-clawd-assistant' // Compute Engine (openclaw-gateway)
+}
+
+// GCP Pricing (us-central1) - for cost calculation from real metrics
 const GCP_PRICING = {
-  // e2-medium: 2 vCPU, 4GB RAM
-  // Precio por hora: ~$0.034/hr (on-demand)
-  e2MediumHourly: 0.034,
-  // Cloud Run: 
-  // CPU: $0.00002400/vCPU-second = $0.0864/vCPU-hour
-  // Memory: $0.00000250/GiB-second
-  // Requests: $0.40 per million
-  cloudRunCpuPerHour: 0.0864,
+  // e2-medium: 2 vCPU, 4GB RAM - $0.03355/hr
+  e2MediumHourly: 0.03355,
+  // Cloud Run pricing
+  cloudRunCpuPerVCpuSecond: 0.00002400,
+  cloudRunMemPerGibSecond: 0.00000250,
   cloudRunRequestsPerMillion: 0.40,
 }
 
@@ -35,11 +43,34 @@ function getDateRange(period: Period): { start: Date; end: Date } {
       start.setHours(0, 0, 0, 0)
       break
     case 'all':
-      start.setFullYear(2020) // Desde siempre
+      start.setFullYear(2024, 0, 1) // Since January 2024
       break
   }
   
   return { start, end }
+}
+
+// Initialize GCP auth from base64 credentials
+function getGCPAuth(): GoogleAuth | null {
+  if (!GCP_BILLING_CREDENTIALS) {
+    console.warn('GCP_BILLING_CREDENTIALS not configured')
+    return null
+  }
+  
+  try {
+    const credentials = JSON.parse(Buffer.from(GCP_BILLING_CREDENTIALS, 'base64').toString('utf-8'))
+    return new GoogleAuth({
+      credentials,
+      scopes: [
+        'https://www.googleapis.com/auth/cloud-billing.readonly',
+        'https://www.googleapis.com/auth/cloud-platform',
+        'https://www.googleapis.com/auth/monitoring.read',
+      ],
+    })
+  } catch (error) {
+    console.error('Error parsing GCP credentials:', error)
+    return null
+  }
 }
 
 async function getVAPICosts(period: Period) {
@@ -51,13 +82,11 @@ async function getVAPICosts(period: Period) {
     const { start, end } = getDateRange(period)
     
     // VAPI plan only allows 14 days of call history
-    // Adjust start date if needed
     const maxHistoryDays = 14
     const maxHistoryMs = maxHistoryDays * 24 * 60 * 60 * 1000
     const effectiveStart = new Date(Math.max(start.getTime(), end.getTime() - maxHistoryMs))
     const limitedTo14Days = effectiveStart.getTime() > start.getTime()
     
-    // Fetch calls from VAPI
     const params = new URLSearchParams({
       limit: '1000',
       createdAtGt: effectiveStart.toISOString(),
@@ -68,7 +97,7 @@ async function getVAPICosts(period: Period) {
       headers: {
         'Authorization': `Bearer ${VAPI_API_KEY}`,
       },
-      next: { revalidate: 300 }, // Cache 5 minutes
+      next: { revalidate: 300 },
     })
 
     if (!response.ok) {
@@ -79,7 +108,6 @@ async function getVAPICosts(period: Period) {
 
     const calls = await response.json()
     
-    // Handle case where response is not an array (error response)
     if (!Array.isArray(calls)) {
       console.error('VAPI returned non-array response:', calls)
       return { total: 0, calls: 0, breakdown: {}, limitedTo14Days, error: 'Invalid response' }
@@ -110,6 +138,7 @@ async function getVAPICosts(period: Period) {
       calls: calls.length,
       breakdown,
       limitedTo14Days,
+      isRealData: true,
     }
   } catch (error) {
     console.error('Error fetching VAPI costs:', error)
@@ -117,34 +146,286 @@ async function getVAPICosts(period: Period) {
   }
 }
 
-async function getCloudRunCosts(period: Period) {
-  // Cloud Run costs are harder to get in real-time without BigQuery export
-  // We'll estimate based on usage patterns
+// Fetch Compute Engine metrics from Cloud Monitoring
+async function getComputeEngineMetrics(auth: GoogleAuth, projectId: string, period: Period) {
+  try {
+    const { start, end } = getDateRange(period)
+    const client = await auth.getClient()
+    const accessToken = await client.getAccessToken()
+    
+    const monitoringUrl = `https://monitoring.googleapis.com/v3/projects/${projectId}/timeSeries`
+    
+    // Get CPU utilization to determine uptime
+    const filter = encodeURIComponent(
+      'metric.type="compute.googleapis.com/instance/cpu/utilization" AND resource.type="gce_instance"'
+    )
+    
+    const interval = `interval.startTime=${start.toISOString()}&interval.endTime=${end.toISOString()}`
+    
+    const response = await fetch(
+      `${monitoringUrl}?filter=${filter}&${interval}&aggregation.alignmentPeriod=3600s&aggregation.perSeriesAligner=ALIGN_MEAN`,
+      {
+        headers: {
+          'Authorization': `Bearer ${accessToken.token}`,
+          'Content-Type': 'application/json',
+        },
+      }
+    )
+    
+    if (!response.ok) {
+      const errorText = await response.text()
+      console.error(`GCP Monitoring API error for ${projectId}:`, response.status, errorText)
+      return null
+    }
+    
+    const data = await response.json()
+    
+    // Count data points (each represents 1 hour of uptime)
+    let totalHours = 0
+    let instanceName = 'unknown'
+    
+    if (data.timeSeries && data.timeSeries.length > 0) {
+      for (const series of data.timeSeries) {
+        if (series.resource?.labels?.instance_id) {
+          instanceName = series.metric?.labels?.instance_name || series.resource?.labels?.instance_id
+        }
+        if (series.points) {
+          totalHours += series.points.length
+        }
+      }
+    }
+    
+    return {
+      uptimeHours: totalHours,
+      instances: data.timeSeries?.length || 0,
+      instanceName,
+    }
+  } catch (error) {
+    console.error(`Error fetching Compute Engine metrics for ${projectId}:`, error)
+    return null
+  }
+}
+
+// Get Cloud Run metrics
+async function getCloudRunMetrics(auth: GoogleAuth, projectId: string, period: Period) {
+  try {
+    const { start, end } = getDateRange(period)
+    const client = await auth.getClient()
+    const accessToken = await client.getAccessToken()
+    
+    const monitoringUrl = `https://monitoring.googleapis.com/v3/projects/${projectId}/timeSeries`
+    
+    // Get request count for Cloud Run
+    const filter = encodeURIComponent(
+      'metric.type="run.googleapis.com/request_count" AND resource.type="cloud_run_revision"'
+    )
+    
+    const interval = `interval.startTime=${start.toISOString()}&interval.endTime=${end.toISOString()}`
+    
+    const response = await fetch(
+      `${monitoringUrl}?filter=${filter}&${interval}&aggregation.alignmentPeriod=86400s&aggregation.perSeriesAligner=ALIGN_SUM`,
+      {
+        headers: {
+          'Authorization': `Bearer ${accessToken.token}`,
+          'Content-Type': 'application/json',
+        },
+      }
+    )
+    
+    if (!response.ok) {
+      const errorText = await response.text()
+      console.error(`Cloud Run Monitoring API error for ${projectId}:`, response.status, errorText)
+      return null
+    }
+    
+    const data = await response.json()
+    
+    let totalRequests = 0
+    let serviceName = 'unknown'
+    
+    if (data.timeSeries) {
+      for (const series of data.timeSeries) {
+        if (series.resource?.labels?.service_name) {
+          serviceName = series.resource.labels.service_name
+        }
+        if (series.points) {
+          for (const point of series.points) {
+            totalRequests += parseInt(point.value?.int64Value || '0', 10)
+          }
+        }
+      }
+    }
+    
+    // Also get container instance time (billable CPU seconds)
+    const cpuFilter = encodeURIComponent(
+      'metric.type="run.googleapis.com/container/billable_instance_time" AND resource.type="cloud_run_revision"'
+    )
+    
+    const cpuResponse = await fetch(
+      `${monitoringUrl}?filter=${cpuFilter}&${interval}&aggregation.alignmentPeriod=86400s&aggregation.perSeriesAligner=ALIGN_SUM`,
+      {
+        headers: {
+          'Authorization': `Bearer ${accessToken.token}`,
+          'Content-Type': 'application/json',
+        },
+      }
+    )
+    
+    let billableSeconds = 0
+    if (cpuResponse.ok) {
+      const cpuData = await cpuResponse.json()
+      if (cpuData.timeSeries) {
+        for (const series of cpuData.timeSeries) {
+          if (series.points) {
+            for (const point of series.points) {
+              billableSeconds += parseFloat(point.value?.doubleValue || '0')
+            }
+          }
+        }
+      }
+    }
+    
+    return {
+      requests: totalRequests,
+      billableSeconds,
+      serviceName,
+    }
+  } catch (error) {
+    console.error(`Error fetching Cloud Run metrics for ${projectId}:`, error)
+    return null
+  }
+}
+
+async function getGCPCosts(period: Period) {
+  const auth = getGCPAuth()
   
+  if (!auth) {
+    // Fallback to estimates if no credentials
+    return getGCPCostsEstimated(period)
+  }
+  
+  try {
+    const { start, end } = getDateRange(period)
+    const hoursInPeriod = (end.getTime() - start.getTime()) / (1000 * 60 * 60)
+    
+    // Fetch metrics from both projects in parallel
+    const [computeMetrics, cloudRunMetrics] = await Promise.all([
+      getComputeEngineMetrics(auth, GCP_PROJECTS.openClaw, period),
+      getCloudRunMetrics(auth, GCP_PROJECTS.cloudRun, period),
+    ])
+    
+    // OpenClaw Gateway (e2-medium) - Calculate cost from real uptime
+    let openclawCost = 0
+    let openclawUptime = hoursInPeriod * 0.999 // Default 99.9% if no data
+    let openclawIsReal = false
+    
+    if (computeMetrics && computeMetrics.uptimeHours > 0) {
+      openclawUptime = computeMetrics.uptimeHours
+      openclawIsReal = true
+    }
+    openclawCost = openclawUptime * GCP_PRICING.e2MediumHourly
+    
+    // Cloud Run (gps-bot) - Calculate cost from real usage
+    let cloudRunCost = 0
+    let cloudRunRequests = 0
+    let cloudRunCpuHours = 0
+    let cloudRunIsReal = false
+    
+    if (cloudRunMetrics && (cloudRunMetrics.requests > 0 || cloudRunMetrics.billableSeconds > 0)) {
+      cloudRunRequests = cloudRunMetrics.requests
+      cloudRunIsReal = true
+      
+      if (cloudRunMetrics.billableSeconds > 0) {
+        // Calculate from actual billable seconds (1 vCPU, 512MB assumed)
+        const cpuCost = cloudRunMetrics.billableSeconds * GCP_PRICING.cloudRunCpuPerVCpuSecond
+        const memCost = cloudRunMetrics.billableSeconds * 0.5 * GCP_PRICING.cloudRunMemPerGibSecond
+        const requestCost = (cloudRunRequests / 1000000) * GCP_PRICING.cloudRunRequestsPerMillion
+        cloudRunCost = cpuCost + memCost + requestCost
+        cloudRunCpuHours = cloudRunMetrics.billableSeconds / 3600
+      } else {
+        // Estimate from request count
+        const avgDurationSec = 0.5
+        const cpuCost = cloudRunRequests * avgDurationSec * GCP_PRICING.cloudRunCpuPerVCpuSecond
+        const memCost = cloudRunRequests * avgDurationSec * 0.5 * GCP_PRICING.cloudRunMemPerGibSecond
+        const requestCost = (cloudRunRequests / 1000000) * GCP_PRICING.cloudRunRequestsPerMillion
+        cloudRunCost = cpuCost + memCost + requestCost
+        cloudRunCpuHours = cloudRunRequests * avgDurationSec / 3600
+      }
+    } else {
+      // Estimate based on period
+      const daysInPeriod = hoursInPeriod / 24
+      cloudRunRequests = Math.round(daysInPeriod * 200)
+      cloudRunCost = (cloudRunRequests / 1000000) * GCP_PRICING.cloudRunRequestsPerMillion
+      cloudRunCpuHours = daysInPeriod * 0.5
+    }
+    
+    return {
+      openclaw: {
+        total: openclawCost,
+        uptime: (openclawUptime / hoursInPeriod) * 100,
+        uptimeHours: openclawUptime,
+        machineType: 'e2-medium',
+        region: 'us-central1',
+        specs: '2 vCPU, 4GB RAM',
+        hourlyRate: GCP_PRICING.e2MediumHourly,
+        isRealData: openclawIsReal,
+        projectId: GCP_PROJECTS.openClaw,
+      },
+      cloudRun: {
+        total: cloudRunCost,
+        requests: cloudRunRequests,
+        cpuHours: cloudRunCpuHours,
+        isRealData: cloudRunIsReal,
+        serviceName: cloudRunMetrics?.serviceName || 'gps-bot',
+        projectId: GCP_PROJECTS.cloudRun,
+      },
+      billingAccountId: GCP_BILLING_ACCOUNT_ID,
+    }
+  } catch (error) {
+    console.error('Error fetching GCP costs:', error)
+    return getGCPCostsEstimated(period)
+  }
+}
+
+function getGCPCostsEstimated(period: Period) {
   const { start, end } = getDateRange(period)
-  const hours = (end.getTime() - start.getTime()) / (1000 * 60 * 60)
+  const hoursInPeriod = (end.getTime() - start.getTime()) / (1000 * 60 * 60)
+  const daysInPeriod = hoursInPeriod / 24
   
-  // Estimated usage for Sofia Bot:
-  // - Average 0.1 vCPU-hours per day (scaled to 0 when idle)
-  // - ~100 requests per day average
-  const daysInPeriod = hours / 24
+  // OpenClaw Gateway (e2-medium) - runs 24/7
+  const openclawCost = hoursInPeriod * GCP_PRICING.e2MediumHourly
   
-  const estimatedCpuHours = daysInPeriod * 0.5 // Very conservative estimate
+  // Cloud Run - minimal usage
   const estimatedRequests = daysInPeriod * 200
-  
-  const cpuCost = estimatedCpuHours * GCP_PRICING.cloudRunCpuPerHour
-  const requestCost = (estimatedRequests / 1000000) * GCP_PRICING.cloudRunRequestsPerMillion
+  const cloudRunCost = (estimatedRequests / 1000000) * GCP_PRICING.cloudRunRequestsPerMillion
   
   return {
-    total: cpuCost + requestCost,
-    requests: Math.round(estimatedRequests),
-    cpuHours: estimatedCpuHours,
+    openclaw: {
+      total: openclawCost,
+      uptime: 99.9,
+      uptimeHours: hoursInPeriod * 0.999,
+      machineType: 'e2-medium',
+      region: 'us-central1',
+      specs: '2 vCPU, 4GB RAM',
+      hourlyRate: GCP_PRICING.e2MediumHourly,
+      isRealData: false,
+      projectId: GCP_PROJECTS.openClaw,
+    },
+    cloudRun: {
+      total: cloudRunCost,
+      requests: Math.round(estimatedRequests),
+      cpuHours: daysInPeriod * 0.5,
+      isRealData: false,
+      serviceName: 'gps-bot',
+      projectId: GCP_PROJECTS.cloudRun,
+    },
+    billingAccountId: GCP_BILLING_ACCOUNT_ID,
   }
 }
 
 async function getHetznerCostsReal(period: Period) {
   if (!HETZNER_API_TOKEN) {
-    console.warn('HETZNER_API_TOKEN not configured, using fallback estimates')
+    console.warn('HETZNER_API_TOKEN not configured')
     return {
       total: 0,
       uptime: 99.9,
@@ -191,7 +472,6 @@ async function getHetznerCostsReal(period: Period) {
     }> = []
 
     for (const server of servers) {
-      // Find price for this server's location
       const locationPricing = server.server_type.prices.find(
         (p: { location: string }) => p.location === server.datacenter.location.name
       ) || server.server_type.prices[0]
@@ -199,7 +479,6 @@ async function getHetznerCostsReal(period: Period) {
       const priceHourly = parseFloat(locationPricing?.price_hourly.gross || '0')
       const priceMonthly = parseFloat(locationPricing?.price_monthly.gross || '0')
       
-      // Calculate cost for the selected period
       const serverCreated = new Date(server.created)
       const effectiveStart = serverCreated > start ? serverCreated : start
       
@@ -207,14 +486,12 @@ async function getHetznerCostsReal(period: Period) {
       if (effectiveStart < end) {
         const hoursInPeriod = (end.getTime() - effectiveStart.getTime()) / (1000 * 60 * 60)
         
-        // For monthly period, check if we're in the same month
         if (period === 'month') {
           const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1)
           const effectiveMonthStart = serverCreated > startOfMonth ? serverCreated : startOfMonth
           const hoursThisMonth = (now.getTime() - effectiveMonthStart.getTime()) / (1000 * 60 * 60)
           periodCost = Math.min(hoursThisMonth * priceHourly, priceMonthly)
         } else if (period === 'all') {
-          // Calculate full months + current month
           const monthsRunning = (now.getFullYear() - serverCreated.getFullYear()) * 12 + 
                                 (now.getMonth() - serverCreated.getMonth())
           periodCost = monthsRunning * priceMonthly + Math.min(
@@ -240,8 +517,7 @@ async function getHetznerCostsReal(period: Period) {
       })
     }
 
-    // For Chatwoot specifically, find the server (usually ubuntu-2gb-ash-1 or similar)
-    const chatwootServer = servers[0] // Main server
+    const chatwootServer = servers[0]
     const chatwootPricing = chatwootServer?.server_type.prices.find(
       (p: { location: string }) => p.location === chatwootServer.datacenter.location.name
     ) || chatwootServer?.server_type.prices[0]
@@ -277,32 +553,18 @@ async function getHetznerCostsReal(period: Period) {
   }
 }
 
-async function getOpenClawCosts(period: Period) {
-  const { start, end } = getDateRange(period)
-  const hours = (end.getTime() - start.getTime()) / (1000 * 60 * 60)
-  
-  // OpenClaw Gateway runs 24/7 on e2-medium
-  const cost = hours * GCP_PRICING.e2MediumHourly
-  
-  return {
-    total: cost,
-    uptime: 99.9, // Assumed uptime
-    machineType: 'e2-medium',
-    region: 'us-central1',
-  }
-}
-
 export async function GET(request: NextRequest) {
   const searchParams = request.nextUrl.searchParams
   const period = (searchParams.get('period') as Period) || 'month'
 
   try {
-    const [vapi, cloudRun, chatwoot, openclaw] = await Promise.all([
+    const [vapi, gcpCosts, chatwoot] = await Promise.all([
       getVAPICosts(period),
-      getCloudRunCosts(period),
+      getGCPCosts(period),
       getHetznerCostsReal(period),
-      getOpenClawCosts(period),
     ])
+
+    const { openclaw, cloudRun } = gcpCosts
 
     const totalMonth = vapi.total + cloudRun.total + chatwoot.total + openclaw.total
 
@@ -314,6 +576,8 @@ export async function GET(request: NextRequest) {
       totalMonth,
       period,
       timestamp: new Date().toISOString(),
+      gcpBillingAccount: GCP_BILLING_ACCOUNT_ID,
+      gcpProjects: GCP_PROJECTS,
     })
   } catch (error) {
     console.error('Error fetching costs:', error)
