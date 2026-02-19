@@ -319,6 +319,9 @@ export default function Dashboard() {
 
                 </div>
 
+                {/* Infrastructure Section */}
+                <InfrastructureSection />
+
                 {/* Cost Breakdown Chart (simple) */}
                 <div className="bg-white rounded-2xl p-6 shadow-lg">
                   <h3 className="text-lg font-semibold text-gray-800 mb-4">Distribución de Costos</h3>
@@ -384,5 +387,138 @@ export default function Dashboard() {
         )}
       </div>
     </main>
+  )
+}
+
+interface HetznerServer {
+  id: number
+  name: string
+  type: string
+  description: string
+  specs: string
+  location: string
+  locationDesc: string
+  ip: string
+  status: string
+  priceMonthly: number
+}
+
+interface HetznerData {
+  servers: HetznerServer[]
+  totalMonthly: number
+  lastUpdated: string
+}
+
+function InfrastructureSection() {
+  const [hetznerData, setHetznerData] = useState<HetznerData | null>(null)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    fetch('/api/costs/hetzner')
+      .then(res => res.json())
+      .then(data => {
+        // Filter out openclaw-gateway - only show Chatwoot server
+        const filteredServers = (data.servers || []).filter(
+          (s: HetznerServer) => !s.name.toLowerCase().includes('openclaw')
+        )
+        setHetznerData({
+          ...data,
+          servers: filteredServers,
+          totalMonthly: filteredServers.reduce((sum: number, s: HetznerServer) => sum + s.priceMonthly, 0)
+        })
+        setLoading(false)
+      })
+      .catch(err => {
+        console.error('Error fetching Hetzner data:', err)
+        setLoading(false)
+      })
+  }, [])
+
+  if (loading) {
+    return (
+      <div className="bg-white rounded-2xl p-6 shadow-lg">
+        <h3 className="text-lg font-semibold text-gray-800 mb-4">☁️ Infraestructura</h3>
+        <div className="animate-pulse">
+          <div className="h-4 bg-gray-200 rounded w-3/4 mb-2"></div>
+          <div className="h-4 bg-gray-200 rounded w-1/2"></div>
+        </div>
+      </div>
+    )
+  }
+
+  if (!hetznerData || hetznerData.servers.length === 0) {
+    return null
+  }
+
+  return (
+    <div className="bg-white rounded-2xl p-6 shadow-lg">
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="text-lg font-semibold text-gray-800">☁️ Infraestructura</h3>
+        <span className="text-sm text-gray-500">
+          Total: €{hetznerData.totalMonthly.toFixed(2)}/mes
+        </span>
+      </div>
+      
+      <div className="space-y-4">
+        {/* Hetzner Servers */}
+        <div>
+          <p className="text-sm font-medium text-gray-600 mb-2">Servidores Hetzner Cloud</p>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {hetznerData.servers.map(server => (
+              <div key={server.id} className="border border-gray-200 rounded-lg p-3 bg-gray-50">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="font-medium text-gray-800">🖥️ {server.name}</span>
+                  <span className={`text-xs px-2 py-0.5 rounded-full ${
+                    server.status === 'running' 
+                      ? 'bg-green-100 text-green-700' 
+                      : 'bg-red-100 text-red-700'
+                  }`}>
+                    {server.status === 'running' ? '🟢 Activo' : '🔴 ' + server.status}
+                  </span>
+                </div>
+                <div className="text-xs text-gray-600 space-y-1">
+                  <p>📍 {server.locationDesc}</p>
+                  <p>💻 {server.description}</p>
+                  <p>🔧 {server.specs}</p>
+                  <p>🌐 IP: <span className="font-mono">{server.ip}</span></p>
+                  <p className="text-purple-600 font-medium">€{server.priceMonthly.toFixed(2)}/mes</p>
+                  <p className="text-gray-400 italic">Servidor Chatwoot</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* GCP Cloud Run Info */}
+        <div>
+          <p className="text-sm font-medium text-gray-600 mb-2">Google Cloud Platform</p>
+          <div className="border border-gray-200 rounded-lg p-3 bg-gray-50">
+            <div className="flex items-center justify-between mb-2">
+              <span className="font-medium text-gray-800">🤖 Sofia Bot (Cloud Run)</span>
+              <span className="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-700">
+                🟢 Activo
+              </span>
+            </div>
+            <div className="text-xs text-gray-600 space-y-1">
+              <p>📍 us-central1</p>
+              <p>💻 Cloud Run (Serverless)</p>
+              <p>🔧 Auto-scaling, pay per request</p>
+              <p>📦 Proyecto: gps-bot-481315</p>
+              <p className="text-gray-400 italic">Costos variables según uso</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {hetznerData.lastUpdated && (
+        <p className="text-xs text-gray-400 mt-3 text-right">
+          Actualizado: {new Date(hetznerData.lastUpdated).toLocaleString('es-AR', {
+            timeZone: 'America/Argentina/Buenos_Aires',
+            dateStyle: 'short',
+            timeStyle: 'short'
+          })}
+        </p>
+      )}
+    </div>
   )
 }
