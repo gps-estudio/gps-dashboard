@@ -313,7 +313,7 @@ export default function Dashboard() {
                           <span className="font-mono text-xs">{costs.chatwoot.ip}</span>
                         </div>
                       )}
-                      <p className="text-xs text-gray-400 mt-2">🇺🇸 Hetzner (Ashburn, VA)</p>
+                      <p className="text-xs text-gray-400 mt-2">🇺🇸 Hetzner (Ashburn, VA) - Servidor Chatwoot</p>
                     </div>
                   </div>
 
