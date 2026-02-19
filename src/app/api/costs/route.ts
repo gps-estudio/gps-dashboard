@@ -5,20 +5,17 @@ const VAPI_API_KEY = process.env.VAPI_API_KEY || ''
 const HETZNER_API_TOKEN = process.env.HETZNER_API_TOKEN || ''
 const HETZNER_API_BASE = 'https://api.hetzner.cloud/v1'
 
-// GCP Billing Configuration
+// GCP Billing Configuration (only for Cloud Run / Sofia Bot)
 const GCP_BILLING_CREDENTIALS = process.env.GCP_BILLING_CREDENTIALS || ''
 const GCP_BILLING_ACCOUNT_ID = process.env.GCP_BILLING_ACCOUNT_ID || '01F2CB-329AFF-39493F'
 
-// GCP Projects configuration
+// GCP Projects configuration - only Cloud Run for Sofia Bot
 const GCP_PROJECTS = {
-  cloudRun: 'gps-bot-481315',      // Cloud Run (gps-bot)
-  openClaw: 'brian-clawd-assistant' // Compute Engine (openclaw-gateway)
+  cloudRun: 'gps-bot-481315',  // Cloud Run (gps-bot / Sofia)
 }
 
 // GCP Pricing (us-central1) - for cost calculation from real metrics
 const GCP_PRICING = {
-  // e2-medium: 2 vCPU, 4GB RAM - $0.03355/hr
-  e2MediumHourly: 0.03355,
   // Cloud Run pricing
   cloudRunCpuPerVCpuSecond: 0.00002400,
   cloudRunMemPerGibSecond: 0.00000250,
@@ -146,66 +143,6 @@ async function getVAPICosts(period: Period) {
   }
 }
 
-// Fetch Compute Engine metrics from Cloud Monitoring
-async function getComputeEngineMetrics(auth: GoogleAuth, projectId: string, period: Period) {
-  try {
-    const { start, end } = getDateRange(period)
-    const client = await auth.getClient()
-    const accessToken = await client.getAccessToken()
-    
-    const monitoringUrl = `https://monitoring.googleapis.com/v3/projects/${projectId}/timeSeries`
-    
-    // Get CPU utilization to determine uptime
-    const filter = encodeURIComponent(
-      'metric.type="compute.googleapis.com/instance/cpu/utilization" AND resource.type="gce_instance"'
-    )
-    
-    const interval = `interval.startTime=${start.toISOString()}&interval.endTime=${end.toISOString()}`
-    
-    const response = await fetch(
-      `${monitoringUrl}?filter=${filter}&${interval}&aggregation.alignmentPeriod=3600s&aggregation.perSeriesAligner=ALIGN_MEAN`,
-      {
-        headers: {
-          'Authorization': `Bearer ${accessToken.token}`,
-          'Content-Type': 'application/json',
-        },
-      }
-    )
-    
-    if (!response.ok) {
-      const errorText = await response.text()
-      console.error(`GCP Monitoring API error for ${projectId}:`, response.status, errorText)
-      return null
-    }
-    
-    const data = await response.json()
-    
-    // Count data points (each represents 1 hour of uptime)
-    let totalHours = 0
-    let instanceName = 'unknown'
-    
-    if (data.timeSeries && data.timeSeries.length > 0) {
-      for (const series of data.timeSeries) {
-        if (series.resource?.labels?.instance_id) {
-          instanceName = series.metric?.labels?.instance_name || series.resource?.labels?.instance_id
-        }
-        if (series.points) {
-          totalHours += series.points.length
-        }
-      }
-    }
-    
-    return {
-      uptimeHours: totalHours,
-      instances: data.timeSeries?.length || 0,
-      instanceName,
-    }
-  } catch (error) {
-    console.error(`Error fetching Compute Engine metrics for ${projectId}:`, error)
-    return null
-  }
-}
-
 // Get Cloud Run metrics
 async function getCloudRunMetrics(auth: GoogleAuth, projectId: string, period: Period) {
   try {
@@ -296,36 +233,22 @@ async function getCloudRunMetrics(auth: GoogleAuth, projectId: string, period: P
   }
 }
 
-async function getGCPCosts(period: Period) {
+async function getCloudRunCosts(period: Period) {
   const auth = getGCPAuth()
   
   if (!auth) {
     // Fallback to estimates if no credentials
-    return getGCPCostsEstimated(period)
+    return getCloudRunCostsEstimated(period)
   }
   
   try {
     const { start, end } = getDateRange(period)
     const hoursInPeriod = (end.getTime() - start.getTime()) / (1000 * 60 * 60)
+    const daysInPeriod = hoursInPeriod / 24
     
-    // Fetch metrics from both projects in parallel
-    const [computeMetrics, cloudRunMetrics] = await Promise.all([
-      getComputeEngineMetrics(auth, GCP_PROJECTS.openClaw, period),
-      getCloudRunMetrics(auth, GCP_PROJECTS.cloudRun, period),
-    ])
+    const cloudRunMetrics = await getCloudRunMetrics(auth, GCP_PROJECTS.cloudRun, period)
     
-    // OpenClaw Gateway (e2-medium) - Calculate cost from real uptime
-    let openclawCost = 0
-    let openclawUptime = hoursInPeriod * 0.999 // Default 99.9% if no data
-    let openclawIsReal = false
-    
-    if (computeMetrics && computeMetrics.uptimeHours > 0) {
-      openclawUptime = computeMetrics.uptimeHours
-      openclawIsReal = true
-    }
-    openclawCost = openclawUptime * GCP_PRICING.e2MediumHourly
-    
-    // Cloud Run (gps-bot) - Calculate cost from real usage
+    // Cloud Run (gps-bot / Sofia) - Calculate cost from real usage
     let cloudRunCost = 0
     let cloudRunRequests = 0
     let cloudRunCpuHours = 0
@@ -353,73 +276,41 @@ async function getGCPCosts(period: Period) {
       }
     } else {
       // Estimate based on period
-      const daysInPeriod = hoursInPeriod / 24
       cloudRunRequests = Math.round(daysInPeriod * 200)
       cloudRunCost = (cloudRunRequests / 1000000) * GCP_PRICING.cloudRunRequestsPerMillion
       cloudRunCpuHours = daysInPeriod * 0.5
     }
     
     return {
-      openclaw: {
-        total: openclawCost,
-        uptime: (openclawUptime / hoursInPeriod) * 100,
-        uptimeHours: openclawUptime,
-        machineType: 'e2-medium',
-        region: 'us-central1',
-        specs: '2 vCPU, 4GB RAM',
-        hourlyRate: GCP_PRICING.e2MediumHourly,
-        isRealData: openclawIsReal,
-        projectId: GCP_PROJECTS.openClaw,
-      },
-      cloudRun: {
-        total: cloudRunCost,
-        requests: cloudRunRequests,
-        cpuHours: cloudRunCpuHours,
-        isRealData: cloudRunIsReal,
-        serviceName: cloudRunMetrics?.serviceName || 'gps-bot',
-        projectId: GCP_PROJECTS.cloudRun,
-      },
-      billingAccountId: GCP_BILLING_ACCOUNT_ID,
+      total: cloudRunCost,
+      requests: cloudRunRequests,
+      cpuHours: cloudRunCpuHours,
+      isRealData: cloudRunIsReal,
+      serviceName: cloudRunMetrics?.serviceName || 'gps-bot',
+      projectId: GCP_PROJECTS.cloudRun,
     }
   } catch (error) {
-    console.error('Error fetching GCP costs:', error)
-    return getGCPCostsEstimated(period)
+    console.error('Error fetching Cloud Run costs:', error)
+    return getCloudRunCostsEstimated(period)
   }
 }
 
-function getGCPCostsEstimated(period: Period) {
+function getCloudRunCostsEstimated(period: Period) {
   const { start, end } = getDateRange(period)
   const hoursInPeriod = (end.getTime() - start.getTime()) / (1000 * 60 * 60)
   const daysInPeriod = hoursInPeriod / 24
   
-  // OpenClaw Gateway (e2-medium) - runs 24/7
-  const openclawCost = hoursInPeriod * GCP_PRICING.e2MediumHourly
-  
-  // Cloud Run - minimal usage
+  // Cloud Run - minimal usage estimate
   const estimatedRequests = daysInPeriod * 200
   const cloudRunCost = (estimatedRequests / 1000000) * GCP_PRICING.cloudRunRequestsPerMillion
   
   return {
-    openclaw: {
-      total: openclawCost,
-      uptime: 99.9,
-      uptimeHours: hoursInPeriod * 0.999,
-      machineType: 'e2-medium',
-      region: 'us-central1',
-      specs: '2 vCPU, 4GB RAM',
-      hourlyRate: GCP_PRICING.e2MediumHourly,
-      isRealData: false,
-      projectId: GCP_PROJECTS.openClaw,
-    },
-    cloudRun: {
-      total: cloudRunCost,
-      requests: Math.round(estimatedRequests),
-      cpuHours: daysInPeriod * 0.5,
-      isRealData: false,
-      serviceName: 'gps-bot',
-      projectId: GCP_PROJECTS.cloudRun,
-    },
-    billingAccountId: GCP_BILLING_ACCOUNT_ID,
+    total: cloudRunCost,
+    requests: Math.round(estimatedRequests),
+    cpuHours: daysInPeriod * 0.5,
+    isRealData: false,
+    serviceName: 'gps-bot',
+    projectId: GCP_PROJECTS.cloudRun,
   }
 }
 
@@ -459,81 +350,71 @@ async function getHetznerCostsReal(period: Period) {
     const { start, end } = getDateRange(period)
     const now = new Date()
     
-    let totalCost = 0
-    let totalMonthlyRate = 0
-    const serverDetails: Array<{
-      name: string
-      type: string
-      specs: string
-      location: string
-      ip: string
-      cost: number
-      monthlyRate: number
-    }> = []
-
-    for (const server of servers) {
-      const locationPricing = server.server_type.prices.find(
-        (p: { location: string }) => p.location === server.datacenter.location.name
-      ) || server.server_type.prices[0]
-
-      const priceHourly = parseFloat(locationPricing?.price_hourly.gross || '0')
-      const priceMonthly = parseFloat(locationPricing?.price_monthly.gross || '0')
-      
-      const serverCreated = new Date(server.created)
-      const effectiveStart = serverCreated > start ? serverCreated : start
-      
-      let periodCost = 0
-      if (effectiveStart < end) {
-        const hoursInPeriod = (end.getTime() - effectiveStart.getTime()) / (1000 * 60 * 60)
-        
-        if (period === 'month') {
-          const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1)
-          const effectiveMonthStart = serverCreated > startOfMonth ? serverCreated : startOfMonth
-          const hoursThisMonth = (now.getTime() - effectiveMonthStart.getTime()) / (1000 * 60 * 60)
-          periodCost = Math.min(hoursThisMonth * priceHourly, priceMonthly)
-        } else if (period === 'all') {
-          const monthsRunning = (now.getFullYear() - serverCreated.getFullYear()) * 12 + 
-                                (now.getMonth() - serverCreated.getMonth())
-          periodCost = monthsRunning * priceMonthly + Math.min(
-            ((now.getTime() - new Date(now.getFullYear(), now.getMonth(), 1).getTime()) / (1000 * 60 * 60)) * priceHourly,
-            priceMonthly
-          )
-        } else {
-          periodCost = hoursInPeriod * priceHourly
-        }
+    // Find only the Chatwoot server (ubuntu-2gb-ash-1)
+    const chatwootServer = servers.find((s: any) => 
+      s.name === 'ubuntu-2gb-ash-1' || 
+      s.public_net?.ipv4?.ip === '178.156.255.182'
+    ) || servers[0]
+    
+    if (!chatwootServer) {
+      return {
+        total: 0,
+        uptime: 99.9,
+        machineType: 'Unknown',
+        provider: 'Hetzner',
+        specs: 'N/A',
+        ip: 'N/A',
+        monthlyRate: 0,
+        isRealData: false,
+        servers: [],
+        lastUpdated: new Date().toISOString(),
       }
-      
-      totalCost += periodCost
-      totalMonthlyRate += priceMonthly
-      
-      serverDetails.push({
-        name: server.name,
-        type: server.server_type.name.toUpperCase(),
-        specs: `${server.server_type.cores} vCPU, ${server.server_type.memory}GB RAM, ${server.server_type.disk}GB SSD`,
-        location: server.datacenter.location.description,
-        ip: server.public_net?.ipv4?.ip || 'N/A',
-        cost: periodCost,
-        monthlyRate: priceMonthly,
-      })
     }
 
-    const chatwootServer = servers[0]
-    const chatwootPricing = chatwootServer?.server_type.prices.find(
+    const locationPricing = chatwootServer.server_type.prices.find(
       (p: { location: string }) => p.location === chatwootServer.datacenter.location.name
-    ) || chatwootServer?.server_type.prices[0]
+    ) || chatwootServer.server_type.prices[0]
+
+    const priceHourly = parseFloat(locationPricing?.price_hourly.gross || '0')
+    const priceMonthly = parseFloat(locationPricing?.price_monthly.gross || '0')
+    
+    const serverCreated = new Date(chatwootServer.created)
+    const effectiveStart = serverCreated > start ? serverCreated : start
+    
+    let periodCost = 0
+    if (effectiveStart < end) {
+      if (period === 'month') {
+        const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1)
+        const effectiveMonthStart = serverCreated > startOfMonth ? serverCreated : startOfMonth
+        const hoursThisMonth = (now.getTime() - effectiveMonthStart.getTime()) / (1000 * 60 * 60)
+        periodCost = Math.min(hoursThisMonth * priceHourly, priceMonthly)
+      } else if (period === 'all') {
+        const monthsRunning = (now.getFullYear() - serverCreated.getFullYear()) * 12 + 
+                              (now.getMonth() - serverCreated.getMonth())
+        periodCost = monthsRunning * priceMonthly + Math.min(
+          ((now.getTime() - new Date(now.getFullYear(), now.getMonth(), 1).getTime()) / (1000 * 60 * 60)) * priceHourly,
+          priceMonthly
+        )
+      } else {
+        const hoursInPeriod = (end.getTime() - effectiveStart.getTime()) / (1000 * 60 * 60)
+        periodCost = hoursInPeriod * priceHourly
+      }
+    }
+    
+    // Convert EUR to USD (approximate)
+    const eurToUsd = 1.08
+    const periodCostUsd = periodCost * eurToUsd
+    const monthlyRateUsd = priceMonthly * eurToUsd
 
     return {
-      total: totalCost,
+      total: periodCostUsd,
       uptime: 99.9,
-      machineType: chatwootServer?.server_type.name.toUpperCase() || 'Unknown',
+      machineType: chatwootServer.server_type.name.toUpperCase(),
       provider: 'Hetzner',
-      specs: chatwootServer ? 
-        `${chatwootServer.server_type.cores} vCPU, ${chatwootServer.server_type.memory}GB RAM` : 
-        'N/A',
-      ip: chatwootServer?.public_net?.ipv4?.ip || 'N/A',
-      monthlyRate: parseFloat(chatwootPricing?.price_monthly.gross || '0'),
+      specs: `${chatwootServer.server_type.cores} vCPU, ${chatwootServer.server_type.memory}GB RAM`,
+      ip: chatwootServer.public_net?.ipv4?.ip || '178.156.255.182',
+      monthlyRate: monthlyRateUsd,
       isRealData: true,
-      servers: serverDetails,
       lastUpdated: new Date().toISOString(),
     }
   } catch (error) {
@@ -547,7 +428,6 @@ async function getHetznerCostsReal(period: Period) {
       ip: 'N/A',
       monthlyRate: 0,
       isRealData: false,
-      servers: [],
       lastUpdated: new Date().toISOString(),
     }
   }
@@ -558,21 +438,18 @@ export async function GET(request: NextRequest) {
   const period = (searchParams.get('period') as Period) || 'month'
 
   try {
-    const [vapi, gcpCosts, chatwoot] = await Promise.all([
+    const [vapi, cloudRun, chatwoot] = await Promise.all([
       getVAPICosts(period),
-      getGCPCosts(period),
+      getCloudRunCosts(period),
       getHetznerCostsReal(period),
     ])
 
-    const { openclaw, cloudRun } = gcpCosts
-
-    const totalMonth = vapi.total + cloudRun.total + chatwoot.total + openclaw.total
+    const totalMonth = vapi.total + cloudRun.total + chatwoot.total
 
     return NextResponse.json({
       vapi,
       cloudRun,
       chatwoot,
-      openclaw,
       totalMonth,
       period,
       timestamp: new Date().toISOString(),

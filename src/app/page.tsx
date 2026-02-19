@@ -19,7 +19,6 @@ interface CostData {
     ip?: string;
     lastUpdated?: string;
   }
-  openclaw: { total: number; uptime: number; machineType?: string; specs?: string; hourlyRate?: number; isRealData?: boolean }
   totalMonth: number
   timestamp?: string
   gcpBillingAccount?: string
@@ -201,7 +200,7 @@ export default function Dashboard() {
                 </div>
 
                 {/* Service Cards */}
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                   {/* VAPI */}
                   <div className="bg-white rounded-2xl p-6 shadow-lg relative">
                     {costs.vapi.limitedTo14Days && (
@@ -318,45 +317,6 @@ export default function Dashboard() {
                     </div>
                   </div>
 
-                  {/* OpenClaw Gateway */}
-                  <div className="bg-white rounded-2xl p-6 shadow-lg relative">
-                    {costs.openclaw.isRealData ? (
-                      <span className="absolute top-2 right-2 text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full font-medium">
-                        ✓ API Real
-                      </span>
-                    ) : (
-                      <span className="absolute top-2 right-2 text-xs bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded-full font-medium">
-                        ~ Estimado
-                      </span>
-                    )}
-                    <div className="flex items-center justify-between mb-4">
-                      <h3 className="text-lg font-semibold text-gray-800">🦾 OpenClaw</h3>
-                      <span className="text-2xl font-bold text-orange-600">${costs.openclaw.total.toFixed(2)}</span>
-                    </div>
-                    <div className="space-y-2 text-sm text-gray-600">
-                      <div className="flex justify-between">
-                        <span>Tipo</span>
-                        <span className="font-medium">{costs.openclaw.machineType || 'e2-medium'}</span>
-                      </div>
-                      {costs.openclaw.specs && (
-                        <div className="flex justify-between">
-                          <span>Specs</span>
-                          <span className="font-medium">{costs.openclaw.specs}</span>
-                        </div>
-                      )}
-                      <div className="flex justify-between">
-                        <span>Uptime</span>
-                        <span>{costs.openclaw.isRealData ? '' : '~'}{costs.openclaw.uptime.toFixed(1)}%</span>
-                      </div>
-                      {costs.openclaw.hourlyRate && (
-                        <div className="flex justify-between">
-                          <span>Tarifa</span>
-                          <span className="font-medium">${costs.openclaw.hourlyRate.toFixed(4)}/hr</span>
-                        </div>
-                      )}
-                      <p className="text-xs text-gray-400 mt-2">☁️ Compute Engine (us-central1)</p>
-                    </div>
-                  </div>
                 </div>
 
                 {/* Cost Breakdown Chart (simple) */}
@@ -380,11 +340,6 @@ export default function Dashboard() {
                           style={{ width: `${(costs.chatwoot.total / costs.totalMonth) * 100}%` }}
                           title={`Chatwoot: $${costs.chatwoot.total.toFixed(2)}`}
                         ></div>
-                        <div 
-                          className="bg-orange-500 h-full" 
-                          style={{ width: `${(costs.openclaw.total / costs.totalMonth) * 100}%` }}
-                          title={`OpenClaw: $${costs.openclaw.total.toFixed(2)}`}
-                        ></div>
                       </>
                     )}
                   </div>
@@ -400,10 +355,6 @@ export default function Dashboard() {
                     <div className="flex items-center gap-2">
                       <div className="w-3 h-3 rounded-full bg-purple-500"></div>
                       <span>Chatwoot</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <div className="w-3 h-3 rounded-full bg-orange-500"></div>
-                      <span>OpenClaw</span>
                     </div>
                   </div>
                 </div>
